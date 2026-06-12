@@ -29,7 +29,12 @@ regexes = [
     '''(?i)your[_-]?(token|secret|key|password)[_-]?here''',
     '''xxxxxxxx+''',
     '''0{8,}''',
-    '''(?i)<(your|the)[ _-](api|token|secret|key)>'''
+    '''(?i)<(your|the)[ _-](api|token|secret|key)>''',
+    # 文件名/路径指代,不是值: e.g. "Applying secret: ./xxx.yaml"
+    '''(?i)\.(yaml|yml|json|conf|toml|ini|env|properties|cfg|crt|pem)\b''',
+    # CodeArts 流水线常见步骤名输出
+    '''(?i)Applying\s+(secret|configmap|deployment)''',
+    '''(?i)workflow-secret\.ya?ml''',
 ]
 
 # ---------- Reference rules (zkh GoDemo gitleaks.toml) ----------
