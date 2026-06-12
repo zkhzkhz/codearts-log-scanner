@@ -1,0 +1,6 @@
+# 一行一个仓库,以 # 开头的行被忽略
+# 格式: owner/repo  或  https://gitcode.com/owner/repo
+
+Ascend/pytorch
+# Ascend/MindSpeed-LLM
+# kunpengcompute/hpckit-community

@@ -1,0 +1,229 @@
+title = "linux-security-audit gitleaks rules"
+# Merged ruleset for Linux host / container filesystem scans.
+# Combines: (a) common cloud / generic secret rules, (b) reference rules from
+# https://github.com/zkhzkhz/GoDemo/blob/master/gitleaks.toml, and (c) extra
+# patterns useful on running hosts (kube tokens, JWTs, htpasswd, etc.).
+#
+# Loaded by scripts/scan.sh. Path exclusions are appended at runtime from
+# config/exclude-paths.txt and config/allowlist.toml is merged in.
+
+[[allowlists]]
+description = "global allowlist (paths + obvious dummy values)"
+paths = [
+    '''(^|/)node_modules(/|$)''',
+    '''(^|/)vendor(/|$)''',
+    '''(^|/)\.git/objects(/|$)''',
+    '''(^|/)__pycache__(/|$)''',
+    '''(^|/)site-packages(/|$)''',
+    '''(^|/)\.cache(/|$)''',
+    '''\.min\.js$''',
+    '''\.map$''',
+    '''\.lock$''',
+    '''\.exe$'''
+]
+regexes = [
+    '''AKIAIOSFODNN7EXAMPLE''',
+    '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+    '''(?i)example\.com''',
+    '''(?i)changeme''',
+    '''(?i)your[_-]?(token|secret|key|password)[_-]?here''',
+    '''xxxxxxxx+''',
+    '''0{8,}''',
+    '''(?i)<(your|the)[ _-](api|token|secret|key)>'''
+]
+
+# ---------- Reference rules (zkh GoDemo gitleaks.toml) ----------
+
+[[rules]]
+id = "aws_access_key"
+description = "Detects AWS access key patterns"
+regex = '''(?i)aws_access_key_id\s*[=:]\s*[A-Z0-9]{20}'''
+entropy = 3.5
+keywords = ["aws_access_key"]
+
+[[rules]]
+id = "api_key"
+description = "Detects API key patterns"
+regex = '''(?i)api[_-]?key\s*[=:]\s*[a-zA-Z0-9]{32,}'''
+entropy = 3.5
+keywords = ["api_key", "apikey"]
+
+[[rules]]
+id = "private_key"
+description = "Detects private key patterns"
+regex = '''-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY'''
+keywords = ["private_key", "private key"]
+
+[[rules]]
+id = "password"
+description = "Detects generic password assignments"
+regex = '''(?i)password\s*[=:]\s*[^\s'"]{8,}'''
+entropy = 3.5
+keywords = ["password"]
+
+[[rules]]
+id = "token"
+description = "Detects token patterns"
+regex = '''(?i)token\s*[=:]\s*[a-zA-Z0-9\-_.]{20,}'''
+entropy = 3.5
+keywords = ["token"]
+
+[[rules]]
+id = "database_url"
+description = "Detects database connection strings"
+regex = '''(?i)(?:mysql|postgres|mongodb|redis)://[^\s]+:[^\s]+@'''
+keywords = ["database", "db_url", "mysql://", "postgres://", "mongodb://", "redis://"]
+
+[[rules]]
+id = "ssh_key_assignment"
+description = "Detects SSH key assignments"
+regex = '''(?i)ssh[_-]?(?:private[_-])?key\s*[=:]\s*[a-zA-Z0-9+/]+'''
+entropy = 3.5
+keywords = ["ssh", "ssh_key"]
+
+[[rules]]
+id = "slack_token"
+description = "Detects Slack token patterns"
+regex = '''(?i)(?:slack|xoxp|xoxb)[_-]?token\s*[=:]\s*[a-zA-Z0-9\-]+'''
+entropy = 3.5
+keywords = ["slack", "token", "xoxp", "xoxb"]
+
+[[rules]]
+id = "git-url-credentials"
+description = "Passwords embedded in Git/HTTP/SSH/FTP URLs"
+regex = '''(?i)(?:https?|git|ssh|ftp)://[^\s/:]+:([^\s@]+?(?:@[^\s@]+?)*)@[^\s]+'''
+entropy = 2.5
+keywords = ["http://", "https://", "git://", "ssh://", "ftp://", "ftps://"]
+
+[[rules]]
+id = "gitcode-token-rule"
+description = "GitCode / generic token-key-secret assignment"
+regex = '''(?:token|key|secret|credential|passwd|password|Authorization|creds|BLUE_NFS_PSW)\s*[:=]\s*['"]?([a-zA-Z0-9\-_./+=]{10,150})['"]?'''
+keywords = ["access_token", "gitcode", "token", "secret"]
+
+[[rules]]
+id = "git-config-extra-header"
+description = "git -c http.extraheader=Authorization:Basic <base64>"
+regex = '''Authorization:Basic\s+([a-zA-Z0-9+/=]{16,})'''
+entropy = 3.0
+keywords = ["Authorization:Basic"]
+
+# ---------- Cloud provider keys ----------
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID"
+regex = '''\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b'''
+keywords = ["AKIA","ABIA","ACCA","ASIA"]
+
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS Secret Access Key (heuristic)"
+regex = '''(?i)aws(.{0,20})?(secret|sk)[^a-z0-9/+]{0,4}([a-zA-Z0-9/+=]{40})\b'''
+entropy = 4.3
+keywords = ["aws"]
+
+[[rules]]
+id = "gcp-service-account-key"
+description = "GCP service account JSON private_key"
+regex = '''"private_key":\s*"-----BEGIN PRIVATE KEY-----'''
+keywords = ["private_key", "service_account"]
+
+[[rules]]
+id = "azure-storage-key"
+description = "Azure Storage account key"
+regex = '''(?i)AccountKey\s*=\s*[a-zA-Z0-9+/=]{86,90}'''
+entropy = 4.0
+keywords = ["AccountKey"]
+
+[[rules]]
+id = "huawei-cloud-ak"
+description = "Huawei Cloud Access Key heuristic"
+regex = '''(?i)(huawei|hwcloud|obs)[_-]?(ak|access[_-]?key)\s*[=:]\s*['"]?[A-Z0-9]{16,32}['"]?'''
+entropy = 3.5
+keywords = ["huawei","hwcloud","obs"]
+
+[[rules]]
+id = "aliyun-ak"
+description = "Aliyun / Alibaba Cloud Access Key"
+regex = '''\bLTAI[0-9A-Za-z]{12,30}\b'''
+keywords = ["LTAI"]
+
+[[rules]]
+id = "tencent-secret-id"
+description = "Tencent Cloud Secret ID"
+regex = '''\bAKID[0-9A-Za-z]{13,40}\b'''
+keywords = ["AKID"]
+
+# ---------- Tokens / JWTs ----------
+
+[[rules]]
+id = "github-token"
+description = "GitHub fine-grained / classic token"
+regex = '''\b(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,255}\b'''
+keywords = ["ghp_","gho_","ghu_","ghs_","ghr_","github_pat_"]
+
+[[rules]]
+id = "gitlab-token"
+description = "GitLab personal/CI token"
+regex = '''\bglpat-[0-9A-Za-z\-_]{20,40}\b'''
+keywords = ["glpat-"]
+
+[[rules]]
+id = "jwt"
+description = "JSON Web Token"
+regex = '''\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'''
+keywords = ["eyJ"]
+
+[[rules]]
+id = "kube-bearer-token"
+description = "Kubernetes service account token (raw)"
+regex = '''(?i)(?:bearer|token)\s*[:=]\s*['"]?[A-Za-z0-9_\-]{40,}\.[A-Za-z0-9_\-]{40,}\.[A-Za-z0-9_\-]{40,}'''
+keywords = ["bearer","token"]
+
+# ---------- Private keys & cert material ----------
+
+[[rules]]
+id = "pem-private-key"
+description = "PEM-encoded private key (any algorithm)"
+regex = '''-----BEGIN (RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----'''
+keywords = ["BEGIN", "PRIVATE KEY"]
+
+[[rules]]
+id = "putty-private-key"
+description = "PuTTY .ppk private key header"
+regex = '''PuTTY-User-Key-File-[0-9]:'''
+keywords = ["PuTTY-User-Key-File"]
+
+[[rules]]
+id = "pkcs12-keystore"
+description = "PKCS#12 keystore base64 marker (heuristic)"
+regex = '''MIIK[A-Za-z0-9+/]{200,}'''
+entropy = 5.0
+keywords = ["MIIK"]
+
+# ---------- Linux-specific bits ----------
+
+[[rules]]
+id = "shadow-hash"
+description = "Crypt-format password hash ($1$/$5$/$6$/$y$)"
+regex = '''\$(1|2[abxy]?|5|6|y)\$[A-Za-z0-9./]{1,40}\$[A-Za-z0-9./]{20,}'''
+keywords = ["$1$","$5$","$6$","$y$","$2a$","$2b$","$2y$"]
+
+[[rules]]
+id = "htpasswd-line"
+description = "Apache htpasswd entry"
+regex = '''^[A-Za-z0-9_.-]+:\$(apr1|2[ay]|6)\$[A-Za-z0-9./$]+'''
+keywords = ["$apr1$","$2a$","$2y$","$6$"]
+
+[[rules]]
+id = "mysql-cnf-password"
+description = "Mysql .cnf / my.cnf password line"
+regex = '''(?im)^\s*password\s*=\s*[^\s#].{4,}$'''
+keywords = ["password"]
+
+[[rules]]
+id = "kubeconfig-token"
+description = "kubeconfig embedded token / client-certificate-data"
+regex = '''(?im)^\s*(token|client-certificate-data|client-key-data)\s*:\s*[A-Za-z0-9+/=._-]{40,}'''
+keywords = ["token:", "client-certificate-data", "client-key-data"]
