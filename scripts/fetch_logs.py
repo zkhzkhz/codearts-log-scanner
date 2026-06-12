@@ -29,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -349,33 +350,26 @@ def load_repos_file(path: Path) -> list[tuple[str, str]]:
             print(f"WARN: {path}:{ln} 跳过 ({e})", file=sys.stderr)
     return repos
 
-def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
-                   out_root: Path, limit: int = 0, sleep: float = 0.2) -> tuple[int, int]:
-    """拉取单个仓库的日志。返回 (PR 数, 日志文件数)。"""
-    repo_dir = out_root / f"{owner}_{repo}"
-    repo_dir.mkdir(parents=True, exist_ok=True)
+def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
+                    repo_dir: Path, sleep: float, job_concurrency: int = 4) -> dict:
+    """处理单个 PR:取评论、解析 jobs、并发拉日志。线程安全(只写自己的子目录)。"""
+    num = pr.get("number") or pr.get("iid")
+    if not num:
+        return {"skip": True}
+    title = pr.get("title", "")
+    pr_dir = repo_dir / str(num)
+    pr_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n=== {owner}/{repo} ===", file=sys.stderr)
-    pulls = list_pulls(owner, repo, since, limit=limit)
-    print(f"找到 {len(pulls)} 个 PR", file=sys.stderr)
-
-    index: list[dict] = []
-    total_logs = 0
-    for pr in pulls:
-        num = pr.get("number") or pr.get("iid")
-        if not num:
-            continue
-        title = pr.get("title", "")
-        print(f"#{num} {title[:60]}")
-
-        pr_dir = repo_dir / str(num)
-        pr_dir.mkdir(parents=True, exist_ok=True)
-
+    try:
         comments = list_pr_comments(owner, repo, num)
-        jobs = extract_pipeline_jobs(comments)
+    except GitcodeError as e:
+        return {"number": num, "title": title, "log_count": 0, "error": str(e)}
 
-        pipeline_details: dict[tuple[str, str], dict] = {}
-        if token:
+    jobs = extract_pipeline_jobs(comments)
+
+    pipeline_details: dict[tuple[str, str], dict] = {}
+    if token:
+        try:
             for p in fetch_pr_pipelines(owner, repo, num, token):
                 pid = p.get("pipeline_id")
                 rid = p.get("pipeline_run_id")
@@ -385,49 +379,103 @@ def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
                         pipeline_details[(pid, rid)] = json.loads(detail_str)
                     except (json.JSONDecodeError, TypeError):
                         pass
+        except GitcodeError:
+            pass
 
-        print(f"  comments={len(comments)}  jobs={len(jobs)}  pipelines={len(pipeline_details)}")
-
-        downloaded = []
-        for i, job in enumerate(jobs):
-            short = job["job_run_id"][:8]
-            fname = f"{i:03d}_{short}.log"
-            dest = pr_dir / fname
-            if dest.exists() and dest.stat().st_size > 0:
-                downloaded.append({"file": fname, "cached": True, **job})
-                continue
-            if not token:
-                downloaded.append({"file": None, "skipped": "no token", **job})
-                continue
-            print(f"  [{i:>2}] {short}…", end=" ", flush=True)
-            detail = pipeline_details.get((job["pipeline_id"], job["pipeline_run_id"]))
+    def _one_job(i_job: tuple[int, dict]) -> dict:
+        i, job = i_job
+        short = job["job_run_id"][:8]
+        fname = f"{i:03d}_{short}.log"
+        dest = pr_dir / fname
+        if dest.exists() and dest.stat().st_size > 0:
+            return {"file": fname, "cached": True, **job}
+        if not token:
+            return {"file": None, "skipped": "no token", **job}
+        detail = pipeline_details.get((job["pipeline_id"], job["pipeline_run_id"]))
+        try:
             log = fetch_job_log(owner, repo, token,
                                 pipeline_id=job["pipeline_id"],
                                 pipeline_run_id=job["pipeline_run_id"],
                                 job_run_id=job["job_run_id"],
                                 pipeline_detail=detail,
                                 pr_number=num)
-            if log:
-                dest.write_text(log, encoding="utf-8")
-                downloaded.append({"file": fname, "size": len(log), **job})
-                total_logs += 1
-                print(f"{len(log)}B")
+        except GitcodeError:
+            log = None
+        if log:
+            dest.write_text(log, encoding="utf-8")
+            return {"file": fname, "size": len(log), **job}
+        return {"file": None, "error": "no_log", **job}
+
+    downloaded: list[dict] = [None] * len(jobs)  # type: ignore
+    log_count = 0
+    if jobs:
+        with ThreadPoolExecutor(max_workers=max(1, job_concurrency)) as jex:
+            futures = {jex.submit(_one_job, (i, j)): i for i, j in enumerate(jobs)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    downloaded[idx] = fut.result()
+                    if downloaded[idx].get("file"):
+                        log_count += 1
+                except Exception as e:
+                    downloaded[idx] = {"file": None, "error": str(e), **jobs[idx]}
+                if sleep:
+                    time.sleep(sleep)
+
+    (pr_dir / "_meta.json").write_text(json.dumps({
+        "number": num, "title": title, "state": pr.get("state"),
+        "html_url": pr.get("html_url"),
+        "created_at": pr.get("created_at"),
+        "updated_at": pr.get("updated_at"),
+        "logs": downloaded,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"number": num, "title": title, "log_count": log_count,
+            "comments": len(comments), "jobs": len(jobs)}
+
+def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
+                   out_root: Path, limit: int = 0, sleep: float = 0.0,
+                   concurrency: int = 8, job_concurrency: int = 4) -> tuple[int, int]:
+    """拉取单个仓库的日志。PR 之间用线程池并发,PR 内部 jobs 也并发。"""
+    repo_dir = out_root / f"{owner}_{repo}"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n=== {owner}/{repo} ===", file=sys.stderr)
+    pulls = list_pulls(owner, repo, since, limit=limit)
+    print(f"找到 {len(pulls)} 个 PR (PR并发={concurrency}, job并发={job_concurrency})",
+          file=sys.stderr)
+
+    index: list[dict] = []
+    total_logs = 0
+    done = 0
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futures = {ex.submit(_process_one_pr, owner, repo, pr,
+                             token=token, repo_dir=repo_dir, sleep=sleep,
+                             job_concurrency=job_concurrency): pr
+                   for pr in pulls}
+        for fut in as_completed(futures):
+            try:
+                result = fut.result()
+            except Exception as e:
+                print(f"  !! PR 处理异常: {e}", file=sys.stderr)
+                continue
+            if result.get("skip"):
+                continue
+            done += 1
+            total_logs += result.get("log_count", 0)
+            elapsed = time.time() - t0
+            rate = done / elapsed if elapsed > 0 else 0
+            eta = (len(pulls) - done) / rate if rate > 0 else 0
+            if "error" in result:
+                print(f"  [{done}/{len(pulls)}] #{result['number']} 失败: {result['error']}",
+                      file=sys.stderr)
             else:
-                downloaded.append({"file": None, "error": "no_log", **job})
-                print("无日志")
-            time.sleep(sleep)
+                print(f"  [{done}/{len(pulls)}] #{result['number']} "
+                      f"jobs={result['jobs']} logs={result['log_count']} "
+                      f"({rate:.2f} PR/s, ETA {eta/60:.1f}min)", file=sys.stderr)
+            index.append(result)
 
-        (pr_dir / "_meta.json").write_text(json.dumps({
-            "number": num, "title": title, "state": pr.get("state"),
-            "html_url": pr.get("html_url"),
-            "created_at": pr.get("created_at"),
-            "updated_at": pr.get("updated_at"),
-            "logs": downloaded,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        index.append({"number": num, "title": title,
-                      "log_count": sum(1 for x in downloaded if x.get("file"))})
-        time.sleep(sleep)
-
+    index.sort(key=lambda x: -(x.get("number") or 0))
     (repo_dir / "_index.json").write_text(
         json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     return len(index), total_logs
@@ -461,7 +509,12 @@ Token 获取:
                     help="gitcode web token (从 cookie GITCODE_ACCESS_TOKEN)")
     ap.add_argument("--out", default="logs")
     ap.add_argument("--limit", type=int, default=0, help="每仓库最多处理 N 个 PR")
-    ap.add_argument("--sleep", type=float, default=0.2)
+    ap.add_argument("--sleep", type=float, default=0.05,
+                    help="单次请求后 sleep (秒),并发模式建议 0-0.05")
+    ap.add_argument("--concurrency", "-j", type=int, default=8,
+                    help="并发处理 PR 数(默认 8)")
+    ap.add_argument("--job-concurrency", type=int, default=4,
+                    help="单 PR 内并发拉 job 日志数(默认 4)")
     ap.add_argument("-i", "--interactive", action="store_true")
     args = ap.parse_args()
 
@@ -507,7 +560,9 @@ Token 获取:
     for owner, repo in repos:
         try:
             n_pr, n_log = fetch_one_repo(owner, repo, token=args.token, since=since,
-                                         out_root=out_root, limit=args.limit, sleep=args.sleep)
+                                         out_root=out_root, limit=args.limit,
+                                         sleep=args.sleep, concurrency=args.concurrency,
+                                         job_concurrency=args.job_concurrency)
             grand_pr += n_pr
             grand_log += n_log
         except GitcodeError as e:
