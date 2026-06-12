@@ -4,3 +4,25 @@
 Ascend/pytorch
 # Ascend/MindSpeed-LLM
 # kunpengcompute/hpckit-community
+https://gitcode.com/cann/ascend-transformer-boost.git
+https://gitcode.com/cann/catlass.git
+https://gitcode.com/cann/sip.git
+https://gitcode.com/cann/ascend-boost-comm.git
+https://gitcode.com/cann/shmem.git
+https://gitcode.com/Ascend/msmodelslim
+https://gitcode.com/Ascend/msinsight
+https://gitcode.com/Ascend/msprobe
+https://gitcode.com/Ascend/mind-cluster
+https://gitcode.com/Ascend/RecSDK
+https://gitcode.com/Ascend/MultimodalSDK
+https://gitcode.com/Ascend/AgentSDK
+https://gitcode.com/Ascend/IndexSDK
+https://gitcode.com/Ascend/MindIE-PyMotor
+https://gitcode.com/Ascend/MindIE-SD
+https://gitcode.com/Ascend/MindIE-LLM
+https://gitcode.com/Ascend/pytorch
+https://gitcode.com/Ascend/op-plugin
+https://gitcode.com/Ascend/torchair
+https://gitcode.com/Ascend/MindSpeed-MM
+https://gitcode.com/Ascend/MindSpeed-LLM
+https://gitcode.com/Ascend/DrivingSDK
