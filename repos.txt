@@ -20,7 +20,7 @@ https://gitcode.com/Ascend/IndexSDK
 https://gitcode.com/Ascend/MindIE-PyMotor
 https://gitcode.com/Ascend/MindIE-SD
 https://gitcode.com/Ascend/MindIE-LLM
-https://gitcode.com/Ascend/pytorch
+# https://gitcode.com/Ascend/pytorch  # 与第 4 行重复,已跑过
 https://gitcode.com/Ascend/op-plugin
 https://gitcode.com/Ascend/torchair
 https://gitcode.com/Ascend/MindSpeed-MM
