@@ -1,28 +1,107 @@
 # 一行一个仓库,以 # 开头的行被忽略
 # 格式: owner/repo  或  https://gitcode.com/owner/repo
+#
+# 已扫描完成的仓库(报告在 reports/),不再重复:
+# Ascend/pytorch, AgentSDK, DrivingSDK, IndexSDK, mind-cluster,
+# MindIE-LLM/PyMotor/SD, MindSpeed-LLM/MM, msinsight/msmodelslim/msprobe,
+# MultimodalSDK, op-plugin, RecSDK, torchair
+# cann/ascend-boost-comm, ascend-transformer-boost, catlass, shmem, sip
 
-Ascend/pytorch
-# Ascend/MindSpeed-LLM
-# kunpengcompute/hpckit-community
-https://gitcode.com/cann/ascend-transformer-boost.git
-https://gitcode.com/cann/catlass.git
-https://gitcode.com/cann/sip.git
-https://gitcode.com/cann/ascend-boost-comm.git
-https://gitcode.com/cann/shmem.git
-https://gitcode.com/Ascend/msmodelslim
-https://gitcode.com/Ascend/msinsight
-https://gitcode.com/Ascend/msprobe
-https://gitcode.com/Ascend/mind-cluster
-https://gitcode.com/Ascend/RecSDK
-https://gitcode.com/Ascend/MultimodalSDK
-https://gitcode.com/Ascend/AgentSDK
-https://gitcode.com/Ascend/IndexSDK
-https://gitcode.com/Ascend/MindIE-PyMotor
-https://gitcode.com/Ascend/MindIE-SD
-https://gitcode.com/Ascend/MindIE-LLM
-# https://gitcode.com/Ascend/pytorch  # 与第 4 行重复,已跑过
-https://gitcode.com/Ascend/op-plugin
-https://gitcode.com/Ascend/torchair
-https://gitcode.com/Ascend/MindSpeed-MM
-https://gitcode.com/Ascend/MindSpeed-LLM
-https://gitcode.com/Ascend/DrivingSDK
+# === openubmc org (近30天有更新的全部 71 个仓库) ===
+# 60 个有 PR 活动,11 个 30 天内无 PR(也加进来,fetch 会输出 0 PR 跳过)
+openubmc/docs
+openubmc/manifest
+openubmc/QA
+openubmc/component_drivers
+openubmc/rackmount
+openubmc/libmcpp
+openubmc/storage
+openubmc/network_adapter
+openubmc/bingo
+openubmc/mdb_interface
+openubmc/vpd
+openubmc/skills-marketplace
+openubmc/sensor_mgmt
+openubmc/general_hardware
+openubmc/ipmi_mgmt
+openubmc/webui
+openubmc/devmon
+openubmc/event_mgmt
+openubmc/pcie_device
+openubmc/openubmc_dsl_rulepack
+openubmc/account
+openubmc/openubmc-ci
+openubmc/power_mgmt
+openubmc/profile_schema
+openubmc/bios
+openubmc/community
+openubmc/thermal_mgmt
+openubmc/fructrl
+openubmc/release_management
+openubmc/libipmi
+openubmc/frudata
+openubmc/web_online_help
+openubmc/bmcstudio_community_workbench
+openubmc/infrastructure
+openubmc/chassis
+openubmc/rootfs_user
+openubmc/sensor
+openubmc/yocto_soc
+openubmc/compute_mgmt
+openubmc/obmc_dbus_proxy
+openubmc/bmc_upgrade_mgmt
+openubmc/qemu
+openubmc/bmc_datasync
+openubmc/openubmc_profiles
+openubmc/bcal
+openubmc/libroute_mapper
+openubmc/irc_client
+openubmc/qemu_mockup
+openubmc/observability
+openubmc/active_standby_mgmt
+openubmc/lsw
+openubmc/software-center-config
+openubmc/libsoc_adapter_aspeed
+openubmc/obmc_logging_adapter
+openubmc/vnc_proxy
+openubmc/spdm
+openubmc/bus_tools
+openubmc/.gitcode
+openubmc/manufacture
+openubmc/conan_index
+# 近 30 天 0 PR 但仍在 org 列表里
+openubmc/ccf_openubmc
+openubmc/lcd_console
+openubmc/dcmid
+openubmc/cmdlets_plugin
+openubmc/zabbix_plugin
+openubmc/nagios_plugin
+openubmc/ansible_plugin
+openubmc/libirc
+openubmc/hica
+openubmc/iam_lite
+openubmc/rack_mgmt
+
+# === 历史已扫过的仓库(保留作为记录,注释禁用) ===
+# Ascend/pytorch
+# https://gitcode.com/cann/ascend-transformer-boost.git
+# https://gitcode.com/cann/catlass.git
+# https://gitcode.com/cann/sip.git
+# https://gitcode.com/cann/ascend-boost-comm.git
+# https://gitcode.com/cann/shmem.git
+# https://gitcode.com/Ascend/msmodelslim
+# https://gitcode.com/Ascend/msinsight
+# https://gitcode.com/Ascend/msprobe
+# https://gitcode.com/Ascend/mind-cluster
+# https://gitcode.com/Ascend/RecSDK
+# https://gitcode.com/Ascend/MultimodalSDK
+# https://gitcode.com/Ascend/AgentSDK
+# https://gitcode.com/Ascend/IndexSDK
+# https://gitcode.com/Ascend/MindIE-PyMotor
+# https://gitcode.com/Ascend/MindIE-SD
+# https://gitcode.com/Ascend/MindIE-LLM
+# https://gitcode.com/Ascend/op-plugin
+# https://gitcode.com/Ascend/torchair
+# https://gitcode.com/Ascend/MindSpeed-MM
+# https://gitcode.com/Ascend/MindSpeed-LLM
+# https://gitcode.com/Ascend/DrivingSDK
