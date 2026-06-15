@@ -259,6 +259,52 @@ def fetch_pr_pipelines(owner: str, repo: str, pr_number: int, web_token: str) ->
         return []
     return d.get("content", []) if isinstance(d, dict) else []
 
+def fetch_pipeline_jobs(owner: str, repo: str, web_token: str, *,
+                        pipeline_id: str, pipeline_run_id: str,
+                        pipeline_detail: dict | str | None = None,
+                        pr_number: int | None = None) -> list[dict]:
+    """通过 pipeline-runs/detail 端点取一个 run 的完整结构,提取所有 job_run_id。
+
+    返回: [{"job_run_id": ..., "name": ..., "stage": ..., "status": ...}, ...]
+    """
+    encoded = urllib.parse.quote(f"{owner}/{repo}", safe="")
+    url = f"{WEB_BASE}/projects/pipeline-check/{encoded}/pipelines/{pipeline_id}/pipeline-runs/detail"
+    detail = pipeline_detail or DEFAULT_PIPELINE_DETAIL
+    payload = {
+        "pipeline_run_id": pipeline_run_id,
+        "pipeline_detail": json.dumps(detail) if isinstance(detail, dict) else detail,
+    }
+    status, body = _request(url, method="POST", data=payload,
+                            headers=_web_headers(web_token, owner, repo, pr_number),
+                            timeout=30)
+    if status != 200 or not body:
+        return []
+    try:
+        d = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+
+    jobs: list[dict] = []
+    seen: set[str] = set()
+    for stage in (d.get("stages") or []):
+        stage_name = stage.get("name", "")
+        # pre / jobs / post 都可能有 job_run_id
+        for slot in ("pre", "jobs", "post"):
+            for j in (stage.get(slot) or []):
+                # pre/post 直接有 job_run_id;jobs[] 里 id 就是 job_run_id
+                jrid = j.get("job_run_id") or j.get("id")
+                if not jrid or jrid in seen:
+                    continue
+                seen.add(jrid)
+                jobs.append({
+                    "job_run_id": jrid,
+                    "name": j.get("name") or j.get("task") or "",
+                    "stage": stage_name,
+                    "slot": slot,
+                    "status": j.get("status"),
+                })
+    return jobs
+
 def fetch_job_log(owner: str, repo: str, web_token: str, *,
                   pipeline_id: str, pipeline_run_id: str, job_run_id: str,
                   pipeline_detail: dict | None = None,
@@ -307,7 +353,11 @@ def fetch_job_log(owner: str, repo: str, web_token: str, *,
             break
         end_offset = new_offset
         time.sleep(0.1)
-    return "".join(chunks) if chunks else None
+    result = "".join(chunks) if chunks else None
+    # API 在 job 还没有日志时会返回字面字符串 "has no log yet" — 视为无日志
+    if result and result.strip() == "has no log yet":
+        return None
+    return result
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -365,12 +415,16 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
     except GitcodeError as e:
         return {"number": num, "title": title, "log_count": 0, "error": str(e)}
 
+    # 路径 A: 评论里贴 jobRunId (Ascend/cann 风格)
     jobs = extract_pipeline_jobs(comments)
 
+    # 取 PR 的 pipelines (拿真实的 pipeline_detail)
+    pipelines: list[dict] = []
     pipeline_details: dict[tuple[str, str], dict] = {}
     if token:
         try:
-            for p in fetch_pr_pipelines(owner, repo, num, token):
+            pipelines = fetch_pr_pipelines(owner, repo, num, token)
+            for p in pipelines:
                 pid = p.get("pipeline_id")
                 rid = p.get("pipeline_run_id")
                 detail_str = p.get("pipeline_detail")
@@ -381,6 +435,42 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
                         pass
         except GitcodeError:
             pass
+
+    # 路径 B: 评论里没 jobRunId (openubmc 风格)
+    # 用 pipeline-runs/detail 端点拉每个 run 的所有 jobs
+    if not jobs and token and pipelines:
+        seen_jobs = set()
+        for p in pipelines:
+            pid = p.get("pipeline_id")
+            rid = p.get("pipeline_run_id")
+            if not (pid and rid):
+                continue
+            detail = pipeline_details.get((pid, rid))
+            try:
+                run_jobs = fetch_pipeline_jobs(
+                    owner, repo, token,
+                    pipeline_id=pid, pipeline_run_id=rid,
+                    pipeline_detail=detail, pr_number=num,
+                )
+            except GitcodeError:
+                run_jobs = []
+            for rj in run_jobs:
+                jrid = rj["job_run_id"]
+                if jrid in seen_jobs:
+                    continue
+                seen_jobs.add(jrid)
+                jobs.append({
+                    "pipeline_id": pid,
+                    "pipeline_run_id": rid,
+                    "job_run_id": jrid,
+                    "step_id": "",
+                    "step_run_id": "",
+                    "name": rj.get("name"),
+                    "stage": rj.get("stage"),
+                    "slot": rj.get("slot"),
+                    "status": rj.get("status"),
+                    "source": "pipeline-runs/detail",
+                })
 
     def _one_job(i_job: tuple[int, dict]) -> dict:
         i, job = i_job

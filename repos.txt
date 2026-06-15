@@ -2,106 +2,104 @@
 # 格式: owner/repo  或  https://gitcode.com/owner/repo
 #
 # 已扫描完成的仓库(报告在 reports/),不再重复:
-# Ascend/pytorch, AgentSDK, DrivingSDK, IndexSDK, mind-cluster,
-# MindIE-LLM/PyMotor/SD, MindSpeed-LLM/MM, msinsight/msmodelslim/msprobe,
-# MultimodalSDK, op-plugin, RecSDK, torchair
-# cann/ascend-boost-comm, ascend-transformer-boost, catlass, shmem, sip
+# - Ascend + cann: 22 仓 (3356 PR pytorch + 19 个 Ascend + 5 个 cann)
+# - openubmc: 71 仓 (2545 PR)
+# - 真实泄露: 1 处 (Ascend mind-cluster/AgentSDK 共用的 fufeng123_ git URL token)
+# - 低风险: 1 处 (openubmc skills-marketplace 默认 QA 密码 Admin@9000)
 
-# === openubmc org (近30天有更新的全部 71 个仓库) ===
-# 60 个有 PR 活动,11 个 30 天内无 PR(也加进来,fetch 会输出 0 PR 跳过)
-openubmc/docs
-openubmc/manifest
-openubmc/QA
-openubmc/component_drivers
-openubmc/rackmount
-openubmc/libmcpp
-openubmc/storage
-openubmc/network_adapter
-openubmc/bingo
-openubmc/mdb_interface
-openubmc/vpd
-openubmc/skills-marketplace
-openubmc/sensor_mgmt
-openubmc/general_hardware
-openubmc/ipmi_mgmt
-openubmc/webui
-openubmc/devmon
-openubmc/event_mgmt
-openubmc/pcie_device
-openubmc/openubmc_dsl_rulepack
-openubmc/account
-openubmc/openubmc-ci
-openubmc/power_mgmt
-openubmc/profile_schema
-openubmc/bios
-openubmc/community
-openubmc/thermal_mgmt
-openubmc/fructrl
-openubmc/release_management
-openubmc/libipmi
-openubmc/frudata
-openubmc/web_online_help
-openubmc/bmcstudio_community_workbench
-openubmc/infrastructure
-openubmc/chassis
-openubmc/rootfs_user
-openubmc/sensor
-openubmc/yocto_soc
-openubmc/compute_mgmt
-openubmc/obmc_dbus_proxy
-openubmc/bmc_upgrade_mgmt
-openubmc/qemu
-openubmc/bmc_datasync
-openubmc/openubmc_profiles
-openubmc/bcal
-openubmc/libroute_mapper
-openubmc/irc_client
-openubmc/qemu_mockup
-openubmc/observability
-openubmc/active_standby_mgmt
-openubmc/lsw
-openubmc/software-center-config
-openubmc/libsoc_adapter_aspeed
-openubmc/obmc_logging_adapter
-openubmc/vnc_proxy
-openubmc/spdm
-openubmc/bus_tools
-openubmc/.gitcode
-openubmc/manufacture
-openubmc/conan_index
-# 近 30 天 0 PR 但仍在 org 列表里
-openubmc/ccf_openubmc
-openubmc/lcd_console
-openubmc/dcmid
-openubmc/cmdlets_plugin
-openubmc/zabbix_plugin
-openubmc/nagios_plugin
-openubmc/ansible_plugin
-openubmc/libirc
-openubmc/hica
-openubmc/iam_lite
-openubmc/rack_mgmt
-
-# === 历史已扫过的仓库(保留作为记录,注释禁用) ===
-# Ascend/pytorch
-# https://gitcode.com/cann/ascend-transformer-boost.git
-# https://gitcode.com/cann/catlass.git
-# https://gitcode.com/cann/sip.git
-# https://gitcode.com/cann/ascend-boost-comm.git
-# https://gitcode.com/cann/shmem.git
-# https://gitcode.com/Ascend/msmodelslim
-# https://gitcode.com/Ascend/msinsight
-# https://gitcode.com/Ascend/msprobe
-# https://gitcode.com/Ascend/mind-cluster
-# https://gitcode.com/Ascend/RecSDK
-# https://gitcode.com/Ascend/MultimodalSDK
-# https://gitcode.com/Ascend/AgentSDK
-# https://gitcode.com/Ascend/IndexSDK
-# https://gitcode.com/Ascend/MindIE-PyMotor
-# https://gitcode.com/Ascend/MindIE-SD
-# https://gitcode.com/Ascend/MindIE-LLM
-# https://gitcode.com/Ascend/op-plugin
-# https://gitcode.com/Ascend/torchair
-# https://gitcode.com/Ascend/MindSpeed-MM
-# https://gitcode.com/Ascend/MindSpeed-LLM
-# https://gitcode.com/Ascend/DrivingSDK
+# === BoostKit org (gitcode.com/boostkit, 94 个仓库) ===
+# 探测时间 2026-06-15: ~600 PR (近30天)
+BoostKit/.gitcode
+BoostKit/3FS
+BoostKit/Brotli4j
+BoostKit/KAE
+BoostKit/KDADK-TOOLS
+BoostKit/KUAF
+BoostKit/Kbox-patches
+BoostKit/LMCache
+BoostKit/LowLatencyLib
+BoostKit/OmniAdaptor
+BoostKit/OmniCatalyst
+BoostKit/OmniSkill
+BoostKit/OpenViking
+BoostKit/QA
+BoostKit/Redis
+BoostKit/Ultrascan
+BoostKit/avx2ki
+BoostKit/boostcore
+BoostKit/boostcph
+BoostKit/boostdb
+BoostKit/boostida
+BoostKit/boostkit-agreements
+BoostKit/boostkit-bigdata
+BoostKit/boostmedia
+BoostKit/boostsds
+BoostKit/boostsra
+BoostKit/boostvirt
+BoostKit/brpc
+BoostKit/ceph
+BoostKit/ceph_BK
+BoostKit/cloud-native
+BoostKit/cloud-virtual
+BoostKit/cmf
+BoostKit/community
+BoostKit/daft
+BoostKit/diskann
+BoostKit/faiss
+BoostKit/fbthrift
+BoostKit/ffmpeg
+BoostKit/flash-engram
+BoostKit/folly
+BoostKit/gluten
+BoostKit/hadoop
+BoostKit/hnswlib
+BoostKit/hyperscan
+BoostKit/infra
+BoostKit/isa-l
+BoostKit/kadd-open
+BoostKit/kaot
+BoostKit/knewpfordelta
+BoostKit/kpglibc
+BoostKit/kvecturbo
+BoostKit/libavif
+BoostKit/libwebp
+BoostKit/lz4
+BoostKit/malloc-bench
+BoostKit/mesa
+BoostKit/milvus
+BoostKit/monolith
+BoostKit/mooncake
+BoostKit/numpy
+BoostKit/ocf
+BoostKit/omnioperator
+BoostKit/omniruntime
+BoostKit/omnistatestore
+BoostKit/omnistream
+BoostKit/opencv
+BoostKit/pandas
+BoostKit/protobuf
+BoostKit/rabitq
+BoostKit/rapidjson
+BoostKit/redis-dtoe
+BoostKit/reedsolomon
+BoostKit/release-management
+BoostKit/rocksdb
+BoostKit/simdjson
+BoostKit/skills
+BoostKit/snappy
+BoostKit/sonic
+BoostKit/sonic-cpp
+BoostKit/spdk
+BoostKit/spring-framework
+BoostKit/suricata
+BoostKit/tensorflow
+BoostKit/tensorflow-serving
+BoostKit/tensorrt-llm
+BoostKit/tomcat
+BoostKit/velox
+BoostKit/vllm-ops
+BoostKit/vllm_router
+BoostKit/vmi
+BoostKit/waas
+BoostKit/zlib
+BoostKit/zstd
