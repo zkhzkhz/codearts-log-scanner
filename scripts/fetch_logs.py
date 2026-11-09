@@ -191,11 +191,16 @@ def list_pr_comments(owner: str, repo: str, pr_number: int, v5_token: str = "") 
 
 BOT_LOGIN_HINTS = (
     "ascend-robot", "ascend-ds-bot", "kunpeng-bot", "codearts",
-    "ci-bot", "huawei-ci", "ascend-ci",
+    "ci-bot", "huawei-ci", "ascend-ci", "openubmc-ci-bot", "cann-robot",
 )
 
 OPENLIBING_RE = re.compile(
     r"https?://(?:www\.)?openlibing\.com/apps/pipelineDetail\?[^\s<>\"')]+",
+    re.IGNORECASE,
+)
+
+ACTIONS_RUN_RE = re.compile(
+    r"https?://(?:www\.)?gitcode\.com/([^/\s<>\"')]+)/([^/\s<>\"')]+)/actions/runs/([0-9a-f]{16,})",
     re.IGNORECASE,
 )
 
@@ -240,6 +245,31 @@ def extract_pipeline_jobs(comments: list[dict]) -> list[dict]:
                 "comment_user": (c.get("user") or {}).get("login"),
             })
     return jobs
+
+def extract_action_runs(comments: list[dict]) -> list[dict]:
+    """从评论里提取 gitcode Actions run URL (openubmc-ci-bot / cann-robot 风格)。
+
+    返回: [{"run_id": ..., "comment_id": ..., "comment_user": ...}, ...]
+    run 的 owner/repo 以评论所属 PR 的仓库为准,这里只提取 run_id。
+    """
+    seen: set[str] = set()
+    runs: list[dict] = []
+    for c in comments:
+        body = c.get("body") or ""
+        for m in ACTIONS_RUN_RE.finditer(body):
+            run_id = m.group(3)
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+            runs.append({
+                "owner": m.group(1),
+                "repo": m.group(2),
+                "run_id": run_id,
+                "source_url": m.group(0),
+                "comment_id": c.get("id"),
+                "comment_user": (c.get("user") or {}).get("login"),
+            })
+    return runs
 
 # ---------------------------------------------------------------------------
 # web-api — pipeline + log fetching
@@ -380,6 +410,87 @@ def fetch_job_log(owner: str, repo: str, web_token: str, *,
     if result and result.strip() == "has no log yet":
         return None
     return result
+
+# ---------------------------------------------------------------------------
+# web-api — gitcode Actions (openubmc-ci-bot / cann-robot 风格)
+# ---------------------------------------------------------------------------
+
+def _actions_headers(web_token: str, owner: str, repo: str) -> dict:
+    # CloudWAF 要求带 gitcode.com 的 Referer,否则 418 拦截页
+    return {
+        "Authorization": f"Bearer {web_token}",
+        "Origin": "https://gitcode.com",
+        "Referer": f"https://gitcode.com/{owner}/{repo}",
+        "X-App-Channel": "gitcode-fe",
+        "X-App-Version": "0",
+        "X-Platform": "web",
+    }
+
+def fetch_action_run_detail(owner: str, repo: str, run_id: str,
+                            web_token: str) -> dict | None:
+    """取一个 Actions run 的完整结构 (stages→jobs→steps)。
+
+    该端点公开可达(无有效 token 也能 200,但必须有 Referer 过 CloudWAF)。
+    """
+    encoded = urllib.parse.quote(f"{owner}/{repo}", safe="")
+    url = f"{WEB_BASE}/projects/{encoded}/actions/workflow-runs/{run_id}"
+    status, body = _request(url, headers=_actions_headers(web_token, owner, repo))
+    if status != 200 or not body:
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+
+def fetch_action_job_log(owner: str, repo: str, web_token: str, *,
+                         run_id: str, job_id: str, step_run_id: str,
+                         page_limit: int = 200) -> str | None:
+    """分页拉一个 Actions step 的日志,直到无更多(offset 递增)。
+
+    端点: POST /api/v2/projects/{enc}/actions/workflow-runs/{run}/jobs/{job}/logs?step_run_id={step}
+    body: {"offset": N, "limit": 100}
+    需要有效 web token(过期返回 420)。
+    """
+    encoded = urllib.parse.quote(f"{owner}/{repo}", safe="")
+    url = (f"{WEB_BASE}/projects/{encoded}/actions/workflow-runs/{run_id}"
+           f"/jobs/{job_id}/logs?step_run_id={step_run_id}")
+    headers = _actions_headers(web_token, owner, repo)
+
+    chunks: list[str] = []
+    offset = 0
+    for _ in range(page_limit):
+        status, body = _request(url, method="POST", data={"offset": offset, "limit": 100},
+                                headers=headers, timeout=60)
+        if status == 401 or status == 420:
+            raise GitcodeError(f"Actions 日志需要有效 web token (HTTP {status}, error_code 420=未认证或已过期)")
+        if status != 200 or not body:
+            break
+        try:
+            d = json.loads(body)
+        except json.JSONDecodeError:
+            break
+
+        # 响应可能是 {"log": "..."} / {"logs": [...]} / {"content": ...}
+        part = d.get("log") if isinstance(d, dict) else None
+        if part is None and isinstance(d, dict):
+            part = d.get("logs") or d.get("content") or ""
+        if isinstance(part, list):
+            part = "\n".join(str(x) for x in part)
+        if not part:
+            break
+        chunks.append(str(part))
+
+        # 分页推进: 优先用 end_offset/has_more,否则按返回行数推进
+        new_offset = d.get("end_offset")
+        try:
+            new_offset = int(new_offset)
+        except (TypeError, ValueError):
+            new_offset = offset + len(str(part).splitlines())
+        if new_offset <= offset:
+            break
+        offset = new_offset
+        time.sleep(0.1)
+    return "".join(chunks) if chunks else None
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -534,6 +645,10 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
     # 路径 A: 评论里贴 jobRunId (Ascend/cann 风格)
     jobs = extract_pipeline_jobs(comments)
 
+    # 路径 C: 评论里贴 gitcode Actions run URL (openubmc-ci-bot / cann-robot 风格)
+    # 一个 run 含几十个 job、每个 job 又分多个 step,日志按 step 粒度拉取
+    action_runs = extract_action_runs(comments)
+
     # 取 PR 的 pipelines (拿真实的 pipeline_detail)
     pipelines: list[dict] = []
     pipeline_details: dict[tuple[str, str], dict] = {}
@@ -612,6 +727,58 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
             return {"file": fname, "size": len(log), **job}
         return {"file": None, "error": "no_log", **job}
 
+    def _one_action_job(i_job: tuple[int, dict]) -> dict:
+        i, job = i_job
+        short = job["job_id"][:8]
+        fname = f"a{i:03d}_{short}.log"
+        dest = pr_dir / fname
+        if dest.exists() and dest.stat().st_size > 0:
+            return {"file": fname, "cached": True, **job}
+        if not token:
+            return {"file": None, "skipped": "no token", **job}
+        try:
+            log = fetch_action_job_log(owner, repo, token,
+                                       run_id=job["run_id"],
+                                       job_id=job["job_id"],
+                                       step_run_id=job["step_run_id"])
+        except GitcodeError as e:
+            return {"file": None, "error": str(e), **job}
+        if log:
+            dest.write_text(log, encoding="utf-8")
+            return {"file": fname, "size": len(log), **job}
+        return {"file": None, "error": "no_log", **job}
+
+    # 路径 C 展开: 每个 run → 每个(有日志可拉且非 IGNORED 的)job → 每个 step
+    action_jobs: list[dict] = []
+    action_detail: dict | None = None
+    for ar in action_runs:
+        try:
+            action_detail = fetch_action_run_detail(owner, repo, ar["run_id"], token or "")
+        except GitcodeError:
+            action_detail = None
+        if not action_detail:
+            continue
+        for stage in (action_detail.get("stages") or []):
+            for slot in ("pre", "jobs", "post"):
+                for j in (stage.get(slot) or []):
+                    jid = j.get("id")
+                    if not jid or j.get("status") == "IGNORED":
+                        continue
+                    for st in (j.get("steps") or []):
+                        sid = st.get("id")
+                        if not sid:
+                            continue
+                        action_jobs.append({
+                            "run_id": ar["run_id"],
+                            "job_id": jid,
+                            "job_name": j.get("name"),
+                            "job_status": j.get("status"),
+                            "step_run_id": sid,
+                            "step_name": st.get("name"),
+                            "step_status": st.get("status"),
+                            "source": "actions",
+                        })
+
     downloaded: list[dict] = [None] * len(jobs)  # type: ignore
     log_count = 0
     if jobs:
@@ -627,6 +794,23 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
                     downloaded[idx] = {"file": None, "error": str(e), **jobs[idx]}
                 if sleep:
                     time.sleep(sleep)
+
+    # Actions 日志同样并发拉取,结果并入 downloaded
+    action_downloaded: list[dict] = [None] * len(action_jobs)  # type: ignore
+    if action_jobs:
+        with ThreadPoolExecutor(max_workers=max(1, job_concurrency)) as jex:
+            futures = {jex.submit(_one_action_job, (i, j)): i for i, j in enumerate(action_jobs)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    action_downloaded[idx] = fut.result()
+                    if action_downloaded[idx].get("file"):
+                        log_count += 1
+                except Exception as e:
+                    action_downloaded[idx] = {"file": None, "error": str(e), **action_jobs[idx]}
+                if sleep:
+                    time.sleep(sleep)
+    downloaded.extend(a for a in action_downloaded if a is not None)
 
     (pr_dir / "_meta.json").write_text(json.dumps({
         "number": num, "title": title, "state": pr.get("state"),
