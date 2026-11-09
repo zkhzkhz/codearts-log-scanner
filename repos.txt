@@ -16,4 +16,5 @@
 @BoostKit
 @openUBMC
 @Ascend
+@CANN
 @kunpengcompute
