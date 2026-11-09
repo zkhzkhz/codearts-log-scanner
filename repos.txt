@@ -1,105 +1,16 @@
-# 一行一个仓库,以 # 开头的行被忽略
-# 格式: owner/repo  或  https://gitcode.com/owner/repo
+# 一行一个,以 # 开头的行被忽略
+# 格式:
+#   owner/repo                          指定单个仓库
+#   https://gitcode.com/owner/repo      指定单个仓库 (URL 形式)
+#   @org                                整个组织,运行时自动拉取仓库列表
+#                                       (缓存在 repos_cache.json,7 天过期,
+#                                        --refresh-orgs 强制刷新)
 #
-# 已扫描完成的仓库(报告在 reports/),不再重复:
+# 历史:
 # - Ascend + cann: 22 仓 (3356 PR pytorch + 19 个 Ascend + 5 个 cann)
 # - openubmc: 71 仓 (2545 PR)
+# - BoostKit: 94 仓 (2026-06 手工枚举) → 已改用 @BoostKit 自动列表
 # - 真实泄露: 1 处 (Ascend mind-cluster/AgentSDK 共用的 fufeng123_ git URL token)
 # - 低风险: 1 处 (openubmc skills-marketplace 默认 QA 密码 Admin@9000)
 
-# === BoostKit org (gitcode.com/boostkit, 94 个仓库) ===
-# 探测时间 2026-06-15: ~600 PR (近30天)
-BoostKit/.gitcode
-BoostKit/3FS
-BoostKit/Brotli4j
-BoostKit/KAE
-BoostKit/KDADK-TOOLS
-BoostKit/KUAF
-BoostKit/Kbox-patches
-BoostKit/LMCache
-BoostKit/LowLatencyLib
-BoostKit/OmniAdaptor
-BoostKit/OmniCatalyst
-BoostKit/OmniSkill
-BoostKit/OpenViking
-BoostKit/QA
-BoostKit/Redis
-BoostKit/Ultrascan
-BoostKit/avx2ki
-BoostKit/boostcore
-BoostKit/boostcph
-BoostKit/boostdb
-BoostKit/boostida
-BoostKit/boostkit-agreements
-BoostKit/boostkit-bigdata
-BoostKit/boostmedia
-BoostKit/boostsds
-BoostKit/boostsra
-BoostKit/boostvirt
-BoostKit/brpc
-BoostKit/ceph
-BoostKit/ceph_BK
-BoostKit/cloud-native
-BoostKit/cloud-virtual
-BoostKit/cmf
-BoostKit/community
-BoostKit/daft
-BoostKit/diskann
-BoostKit/faiss
-BoostKit/fbthrift
-BoostKit/ffmpeg
-BoostKit/flash-engram
-BoostKit/folly
-BoostKit/gluten
-BoostKit/hadoop
-BoostKit/hnswlib
-BoostKit/hyperscan
-BoostKit/infra
-BoostKit/isa-l
-BoostKit/kadd-open
-BoostKit/kaot
-BoostKit/knewpfordelta
-BoostKit/kpglibc
-BoostKit/kvecturbo
-BoostKit/libavif
-BoostKit/libwebp
-BoostKit/lz4
-BoostKit/malloc-bench
-BoostKit/mesa
-BoostKit/milvus
-BoostKit/monolith
-BoostKit/mooncake
-BoostKit/numpy
-BoostKit/ocf
-BoostKit/omnioperator
-BoostKit/omniruntime
-BoostKit/omnistatestore
-BoostKit/omnistream
-BoostKit/opencv
-BoostKit/pandas
-BoostKit/protobuf
-BoostKit/rabitq
-BoostKit/rapidjson
-BoostKit/redis-dtoe
-BoostKit/reedsolomon
-BoostKit/release-management
-BoostKit/rocksdb
-BoostKit/simdjson
-BoostKit/skills
-BoostKit/snappy
-BoostKit/sonic
-BoostKit/sonic-cpp
-BoostKit/spdk
-BoostKit/spring-framework
-BoostKit/suricata
-BoostKit/tensorflow
-BoostKit/tensorflow-serving
-BoostKit/tensorrt-llm
-BoostKit/tomcat
-BoostKit/velox
-BoostKit/vllm-ops
-BoostKit/vllm_router
-BoostKit/vmi
-BoostKit/waas
-BoostKit/zlib
-BoostKit/zstd
+@BoostKit

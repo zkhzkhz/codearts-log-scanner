@@ -1,6 +1,7 @@
 .env
 logs/
 reports/
+repos_cache.json
 __pycache__/
 *.pyc
 .venv/

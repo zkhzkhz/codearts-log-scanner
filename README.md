@@ -46,11 +46,16 @@ bash scripts/scan.sh
 ## 仓库配置 (`repos.txt`)
 
 ```
-# 一行一个,以 # 开头被忽略
+# 一行一个,以 # 开头的行被忽略
 Ascend/pytorch
 Ascend/MindSpeed-LLM
 https://gitcode.com/kunpengcompute/hpckit-community
+
+# 整个组织: 运行时调 v5 API 自动拉取该组织全部仓库
+@BoostKit
 ```
+
+`@org` 仓库列表缓存在项目根 `repos_cache.json`（7 天过期，API 失败时自动用过期缓存兜底），用 `--refresh-orgs` 强制刷新。
 
 `fetch_logs.py` 默认从项目根的 `repos.txt` 读取,也可以用 `--repos-file other.txt` 指定其他文件。
 
@@ -72,6 +77,10 @@ CodeArts 门禁日志需登录态访问:
 ```bash
 # 多仓库 (从 repos.txt)
 python3 scripts/fetch_logs.py --days 30
+
+# 整个组织 (自动拉取仓库列表,--refresh-orgs 强制刷新缓存)
+python3 scripts/fetch_logs.py --repo @BoostKit --days 30
+python3 scripts/fetch_logs.py --repo @BoostKit --refresh-orgs --incremental
 
 # 单仓库
 python3 scripts/fetch_logs.py --repo Ascend/pytorch

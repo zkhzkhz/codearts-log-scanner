@@ -143,6 +143,28 @@ def list_pulls(owner: str, repo: str, since: datetime, *, v5_token: str = "",
             break
     return pulls[:limit] if limit else pulls
 
+def list_org_repos(org: str, v5_token: str = "") -> list[str]:
+    """v5 API 翻页拉取组织全部仓库,返回 repo path 列表(不含 owner)。"""
+    repos: list[str] = []
+    page = 1
+    while True:
+        qs = urllib.parse.urlencode({"per_page": 100, "page": page})
+        url = f"{V5_BASE}/orgs/{urllib.parse.quote(org, safe='')}/repos?{qs}"
+        data = v5_get(url, v5_token)
+        if not data or not isinstance(data, list):
+            break
+        for r in data:
+            path = r.get("path")
+            if path:
+                repos.append(path)
+        if len(data) < 100:
+            break
+        page += 1
+        if page > 50:
+            print("! org repos pagination safety limit", file=sys.stderr)
+            break
+    return repos
+
 def list_pr_comments(owner: str, repo: str, pr_number: int, v5_token: str = "") -> list[dict]:
     comments: list[dict] = []
     page = 1
@@ -365,6 +387,11 @@ def fetch_job_log(owner: str, repo: str, web_token: str, *,
 
 def parse_repo_arg(arg: str) -> tuple[str, str]:
     arg = arg.strip()
+    if arg.startswith("@"):
+        org = arg[1:].strip()
+        if not org or "/" in org:
+            raise ValueError(f"无效组织名: {arg}")
+        return "@org", org
     m = re.match(r"https?://(?:www\.)?gitcode\.com/([^/]+)/([^/]+?)(?:\.git)?/?(?:[?#].*)?$", arg)
     if m:
         return m.group(1), m.group(2)
@@ -386,19 +413,90 @@ def prompt_for_repo() -> tuple[str, str]:
             sys.exit(1)
 
 def load_repos_file(path: Path) -> list[tuple[str, str]]:
-    """读取 repos.txt,返回 [(owner, repo), ...]。空行和 # 注释跳过。"""
+    """读取 repos.txt,返回 [(owner, repo), ...]。
+
+    行格式: owner/repo、https://gitcode.com/owner/repo 或 @org(整个组织,运行时展开)。
+    空行和 # 注释跳过。
+    """
     repos: list[tuple[str, str]] = []
     if not path.exists():
         return repos
     for ln, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = line.strip()
-        if not line or line.startswith("#"):
+        line = line.split("#", 1)[0].strip()
+        if not line:
             continue
         try:
             repos.append(parse_repo_arg(line))
         except ValueError as e:
             print(f"WARN: {path}:{ln} 跳过 ({e})", file=sys.stderr)
     return repos
+
+# ---------------------------------------------------------------------------
+# Org repos cache
+# ---------------------------------------------------------------------------
+
+ORG_CACHE_FILE = Path(__file__).resolve().parent.parent / "repos_cache.json"
+ORG_CACHE_TTL = 7 * 86400
+
+def _read_org_cache() -> dict:
+    if not ORG_CACHE_FILE.exists():
+        return {}
+    try:
+        data = json.loads(ORG_CACHE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+def _write_org_cache(cache: dict) -> None:
+    ORG_CACHE_FILE.write_text(
+        json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def get_org_repos(org: str, *, refresh: bool = False, v5_token: str = "") -> list[str]:
+    """返回 org 的仓库列表。优先用缓存(7 天 TTL),过期或 refresh=True 时重新拉取。
+
+    API 失败时若有旧缓存则兜底使用。
+    """
+    cache = _read_org_cache()
+    orgs = cache.get("orgs") or {}
+    cached: list[str] | None = orgs.get(org)
+    fresh = False
+    if cached is not None and not refresh:
+        fetched_at = cache.get("fetched_at", "")
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(
+                fetched_at.replace("Z", "+00:00"))
+            fresh = age.total_seconds() < ORG_CACHE_TTL
+        except ValueError:
+            fresh = False
+        if fresh:
+            print(f"从缓存读取组织 {org} 的 {len(cached)} 个仓库 "
+                  f"({ORG_CACHE_FILE.name}, fetched_at {fetched_at})", file=sys.stderr)
+            return cached
+    try:
+        repos = list_org_repos(org, v5_token)
+    except GitcodeError as e:
+        if cached is not None:
+            print(f"WARN: 刷新组织 {org} 仓库列表失败 ({e}),使用过期缓存 "
+                  f"({len(cached)} 个仓库)", file=sys.stderr)
+            return cached
+        raise
+    print(f"从 API 拉取组织 {org} 的 {len(repos)} 个仓库", file=sys.stderr)
+    cache["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    cache.setdefault("orgs", {})[org] = repos
+    _write_org_cache(cache)
+    return repos
+
+def expand_repo_entries(entries: list[tuple[str, str]], *, refresh: bool = False,
+                        v5_token: str = "") -> list[tuple[str, str]]:
+    """把 ('@org', org) 条目展开为具体仓库,普通条目原样返回。"""
+    out: list[tuple[str, str]] = []
+    for owner, repo in entries:
+        if owner == "@org":
+            out.extend((repo, path) for path in get_org_repos(repo, refresh=refresh,
+                                                              v5_token=v5_token))
+        else:
+            out.append((owner, repo))
+    return out
 
 def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
                     repo_dir: Path, sleep: float, job_concurrency: int = 4,
@@ -674,7 +772,11 @@ def main() -> int:
   %(prog)s --repo Ascend/pytorch --days 30
   %(prog)s --repo https://gitcode.com/Ascend/pytorch --limit 5
 
-  # 多仓库 (从 repos.txt 读取)
+  # 整个组织 (--refresh-orgs 强制刷新缓存)
+  %(prog)s --repo @BoostKit --days 30
+  %(prog)s --repo @BoostKit --refresh-orgs --incremental
+
+  # 多仓库 (从 repos.txt 读取,支持 @org 行)
   %(prog)s --repos-file repos.txt --days 30
   %(prog)s                       # 默认读 ./repos.txt 或 ../repos.txt
 
@@ -685,9 +787,9 @@ Token 获取:
   浏览器登录 gitcode.com → F12 → Application → Cookies →
   复制 GITCODE_ACCESS_TOKEN 到 .env 的 GITCODE_TOKEN
 """)
-    ap.add_argument("--repo", dest="repo_arg", help="单仓库: owner/repo 或 URL")
+    ap.add_argument("--repo", dest="repo_arg", help="单仓库: owner/repo、URL 或 @org(整个组织)")
     ap.add_argument("--repos-file", dest="repos_file",
-                    help="多仓库列表文件 (一行一个,默认 repos.txt)")
+                    help="多仓库列表文件 (一行一个,支持 @org,默认 repos.txt)")
     ap.add_argument("--days", type=int, default=int(os.environ.get("DAYS", "30")))
     ap.add_argument("--token", default=os.environ.get("GITCODE_TOKEN", ""),
                     help="gitcode web token (从 cookie GITCODE_ACCESS_TOKEN)")
@@ -702,6 +804,8 @@ Token 获取:
     ap.add_argument("-i", "--interactive", action="store_true")
     ap.add_argument("--incremental", action="store_true",
                     help="增量模式: 只扫描上次扫描后新增/更新的 PR")
+    ap.add_argument("--refresh-orgs", dest="refresh_orgs", action="store_true",
+                    help="强制刷新 @org 组织仓库缓存 (repos_cache.json)")
     args = ap.parse_args()
 
     # 决定要拉哪些仓库
@@ -731,6 +835,14 @@ Token 获取:
             # 没找到列表文件,进入交互
             print("未提供 --repo / --repos-file,且未找到 repos.txt", file=sys.stderr)
             repos = [prompt_for_repo()]
+
+    try:
+        repos = expand_repo_entries(repos, refresh=args.refresh_orgs,
+                                    v5_token=os.environ.get("GITCODE_V5_TOKEN", ""))
+    except GitcodeError as e:
+        print(f"ERROR: 展开组织仓库失败: {e}", file=sys.stderr)
+        return 2
+    print(f"共 {len(repos)} 个仓库待处理", file=sys.stderr)
 
     if not args.token:
         print("WARN: 未配置 GITCODE_TOKEN,只会列出 URL,不下载日志", file=sys.stderr)
