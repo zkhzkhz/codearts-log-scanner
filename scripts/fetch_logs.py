@@ -401,13 +401,31 @@ def load_repos_file(path: Path) -> list[tuple[str, str]]:
     return repos
 
 def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
-                    repo_dir: Path, sleep: float, job_concurrency: int = 4) -> dict:
-    """处理单个 PR:取评论、解析 jobs、并发拉日志。线程安全(只写自己的子目录)。"""
+                    repo_dir: Path, sleep: float, job_concurrency: int = 4,
+                    incremental: bool = False) -> dict:
+    """处理单个 PR:取评论、解析 jobs、并发拉日志。线程安全(只写自己的子目录)。
+
+    incremental=True 时: 若 _meta.json 已存在且含日志,跳过拉取。
+    """
     num = pr.get("number") or pr.get("iid")
     if not num:
         return {"skip": True}
     title = pr.get("title", "")
     pr_dir = repo_dir / str(num)
+
+    # 增量模式: 若已有 _meta.json 且有日志,跳过
+    if incremental:
+        meta_path = pr_dir / "_meta.json"
+        if meta_path.exists():
+            try:
+                existing = json.loads(meta_path.read_text(encoding="utf-8"))
+                logs_list = existing.get("logs", [])
+                if any(l.get("file") for l in logs_list if isinstance(l, dict)):
+                    return {"number": num, "title": title, "log_count": 0,
+                            "incremental_skip": True, "cached": True}
+            except (json.JSONDecodeError, OSError):
+                pass
+
     pr_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -522,15 +540,74 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
     return {"number": num, "title": title, "log_count": log_count,
             "comments": len(comments), "jobs": len(jobs)}
 
+def get_last_scanned_update(repo_dir: Path) -> datetime | None:
+    """读取 _index.json,返回已扫描 PR 的最新 updated_at 时间。"""
+    idx_path = repo_dir / "_index.json"
+    if not idx_path.exists():
+        return None
+    try:
+        data = json.loads(idx_path.read_text(encoding="utf-8"))
+        if not isinstance(data, list) or not data:
+            return None
+        latest = None
+        for pr in data:
+            upd_raw = pr.get("updated_at")
+            if not upd_raw:
+                continue
+            try:
+                upd = datetime.fromisoformat(upd_raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if latest is None or upd > latest:
+                latest = upd
+        return latest
+    except (json.JSONDecodeError, OSError):
+        return None
+
+def get_scanned_pr_numbers(repo_dir: Path) -> set[int]:
+    """读取 _index.json,返回已扫描的 PR number 集合。"""
+    idx_path = repo_dir / "_index.json"
+    if not idx_path.exists():
+        return set()
+    try:
+        data = json.loads(idx_path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return set()
+        return {pr.get("number") for pr in data if isinstance(pr, dict) and pr.get("number")}
+    except (json.JSONDecodeError, OSError):
+        return set()
+
 def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
                    out_root: Path, limit: int = 0, sleep: float = 0.0,
-                   concurrency: int = 8, job_concurrency: int = 4) -> tuple[int, int]:
-    """拉取单个仓库的日志。PR 之间用线程池并发,PR 内部 jobs 也并发。"""
+                   concurrency: int = 8, job_concurrency: int = 4,
+                   incremental: bool = False) -> tuple[int, int]:
+    """拉取单个仓库的日志。PR 之间用线程池并发,PR 内部 jobs 也并发。
+
+    incremental=True 时:
+      - 若已有 _index.json,只拉 updated_at > 最新已扫描 PR 的更新时间的 PR
+      - 同时跳过已有日志的 PR (通过 _meta.json 判断)
+    """
     repo_dir = out_root / f"{owner}_{repo}"
     repo_dir.mkdir(parents=True, exist_ok=True)
 
+    # 增量模式: 调整 since 时间并获取已扫描 PR 集合
+    scanned_prs: set[int] = set()
+    effective_since = since
+    if incremental:
+        last_upd = get_last_scanned_update(repo_dir)
+        if last_upd and last_upd > since:
+            effective_since = last_upd + timedelta(seconds=1)
+            print(f"增量模式: 从 {effective_since.isoformat()} 开始扫描", file=sys.stderr)
+        scanned_prs = get_scanned_pr_numbers(repo_dir)
+
     print(f"\n=== {owner}/{repo} ===", file=sys.stderr)
-    pulls = list_pulls(owner, repo, since, limit=limit)
+    pulls = list_pulls(owner, repo, effective_since, limit=limit)
+    # 增量模式过滤已扫描的 PR
+    if incremental and scanned_prs:
+        before = len(pulls)
+        pulls = [p for p in pulls if p.get("number") not in scanned_prs]
+        if before != len(pulls):
+            print(f"增量模式: 跳过 {before - len(pulls)} 个已扫描 PR", file=sys.stderr)
     print(f"找到 {len(pulls)} 个 PR (PR并发={concurrency}, job并发={job_concurrency})",
           file=sys.stderr)
 
@@ -541,7 +618,8 @@ def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futures = {ex.submit(_process_one_pr, owner, repo, pr,
                              token=token, repo_dir=repo_dir, sleep=sleep,
-                             job_concurrency=job_concurrency): pr
+                             job_concurrency=job_concurrency,
+                             incremental=incremental): pr
                    for pr in pulls}
         for fut in as_completed(futures):
             try:
@@ -564,6 +642,22 @@ def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
                       f"jobs={result['jobs']} logs={result['log_count']} "
                       f"({rate:.2f} PR/s, ETA {eta/60:.1f}min)", file=sys.stderr)
             index.append(result)
+
+    # 增量模式: 合并旧 index
+    if incremental:
+        old_idx_path = repo_dir / "_index.json"
+        if old_idx_path.exists():
+            try:
+                old_idx = json.loads(old_idx_path.read_text(encoding="utf-8"))
+                if isinstance(old_idx, list):
+                    # 用 dict 去重,新结果覆盖旧的
+                    merged = {pr.get("number"): pr for pr in old_idx if isinstance(pr, dict) and pr.get("number")}
+                    for pr in index:
+                        if pr.get("number"):
+                            merged[pr["number"]] = pr
+                    index = list(merged.values())
+            except (json.JSONDecodeError, OSError):
+                pass
 
     index.sort(key=lambda x: -(x.get("number") or 0))
     (repo_dir / "_index.json").write_text(
@@ -606,6 +700,8 @@ Token 获取:
     ap.add_argument("--job-concurrency", type=int, default=4,
                     help="单 PR 内并发拉 job 日志数(默认 4)")
     ap.add_argument("-i", "--interactive", action="store_true")
+    ap.add_argument("--incremental", action="store_true",
+                    help="增量模式: 只扫描上次扫描后新增/更新的 PR")
     args = ap.parse_args()
 
     # 决定要拉哪些仓库
@@ -644,6 +740,8 @@ Token 获取:
     out_root.mkdir(parents=True, exist_ok=True)
 
     print(f"窗口: {since.date()} 起", file=sys.stderr)
+    if args.incremental:
+        print("增量模式: 已扫描的仓库只拉新 PR", file=sys.stderr)
 
     grand_pr = 0
     grand_log = 0
@@ -652,7 +750,8 @@ Token 获取:
             n_pr, n_log = fetch_one_repo(owner, repo, token=args.token, since=since,
                                          out_root=out_root, limit=args.limit,
                                          sleep=args.sleep, concurrency=args.concurrency,
-                                         job_concurrency=args.job_concurrency)
+                                         job_concurrency=args.job_concurrency,
+                                         incremental=args.incremental)
             grand_pr += n_pr
             grand_log += n_log
         except GitcodeError as e:
