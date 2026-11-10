@@ -509,6 +509,137 @@ def fetch_action_job_log(owner: str, repo: str, token: str, *,
     return result
 
 # ---------------------------------------------------------------------------
+# openlibing 自家网关 — 匿名可读的 CodeArts 日志源 (路径 D)
+#
+# openlibing.com 前端 (pipelineDetail 页) 调自己的后端网关取流水线数据,
+# 对公开仓库完全免登录 (与 gitcode web-api 无关,不需要任何 token):
+#   GET  https://www.openlibing.com/gateway/openlibing-cicd/project/pipeline/pipeline-run/detail
+#        ?projectId={pid}&pipelineId={pipelineId}&pipelineRunId={runId}
+#   POST https://www.openlibing.com/gateway/openlibing-cicd/project/pipeline/logs
+#        body {"projectId","pipelineId","pipelineRunId","jobRunId","stepRunId",
+#              "sort":"asc","limit":2000,"startOffset":0}
+# projectId 是 openlibing 平台数字 ID (MindSpore=300030, kunpengcompute=300073,
+# BoostKit=300059),从评论 URL query 里来,不用猜。
+#
+# 实测 (2026-11-10):
+#   - MindSpore / kunpengcompute: detail + logs 全 200 匿名可拉
+#   - BoostKit: 主门禁 pipeline (ab825e) 源仓库是私有 fork → 4001 "需要登录代码仓"
+#   - 旧 run 日志会过期,返回字面 "任务过期，日志不予展示"
+# ---------------------------------------------------------------------------
+
+OLB_GATE_BASE = "https://www.openlibing.com/gateway/openlibing-cicd"
+OLB_LOG_EXPIRED_MARK = "任务过期，日志不予展示"
+
+def _olb_headers() -> dict:
+    return {
+        "Referer": "https://www.openlibing.com/apps/pipelineDetail",
+        "Origin": "https://www.openlibing.com",
+    }
+
+def fetch_olb_run_detail(project_id: str, pipeline_id: str, run_id: str) -> dict | None:
+    """openlibing 网关取 run 结构 (stages→jobs→steps),匿名。"""
+    url = (f"{OLB_GATE_BASE}/project/pipeline/pipeline-run/detail"
+           f"?projectId={project_id}&pipelineId={pipeline_id}&pipelineRunId={run_id}")
+    status, body = _request(url, headers=_olb_headers(), timeout=30)
+    if status != 200 or not body:
+        return None
+    try:
+        d = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    # 4001 需要登录代码仓 / 401 流水线不存在等业务错误码都放 data=null
+    return d.get("data") or None
+
+def fetch_olb_job_log(project_id: str, *, pipeline_id: str, run_id: str,
+                      job_run_id: str, step_run_id: str,
+                      page_limit: int = 50) -> str | None:
+    """openlibing 网关分页拉一个 step 的日志,匿名。
+
+    响应: {"has_more": bool, "start_offset": N, "end_offset": N, "log": "..."}
+    实测 offset/startOffset 服务端处理不稳定,分页不可靠 → 用大 limit
+    (2000 行) 一次拉全;若 has_more 仍为 true 只能尽力而为止。
+    """
+    url = f"{OLB_GATE_BASE}/project/pipeline/logs"
+    chunks: list[str] = []
+    start_offset = 0
+    for _ in range(page_limit):
+        payload = {
+            "projectId": project_id,
+            "pipelineId": pipeline_id,
+            "pipelineRunId": run_id,
+            "jobRunId": job_run_id,
+            "stepRunId": step_run_id,
+            "sort": "asc",
+            "limit": 2000,
+            "startOffset": start_offset,
+        }
+        status, body = _request(url, method="POST", data=payload,
+                                headers=_olb_headers(), timeout=60)
+        if status != 200 or not body:
+            break
+        try:
+            d = json.loads(body)
+        except json.JSONDecodeError:
+            break
+        dd = d.get("data") or {}
+        part = dd.get("log") or ""
+        if isinstance(part, list):
+            part = "\n".join(str(x) for x in part)
+        if part:
+            chunks.append(str(part))
+        has_more = bool(dd.get("has_more", False))
+        try:
+            new_offset = int(dd.get("end_offset") or 0)
+        except (TypeError, ValueError):
+            break
+        if not has_more or new_offset <= start_offset:
+            break
+        start_offset = new_offset
+        time.sleep(0.1)
+    result = "".join(chunks) if chunks else None
+    if result and OLB_LOG_EXPIRED_MARK in result:
+        return None
+    return result
+
+def extract_olb_pipeline_refs(comments: list[dict]) -> list[dict]:
+    """从 bot 评论的 openlibing URL 里提取 (projectId, pipelineId, pipelineRunId)。
+
+    与 extract_pipeline_jobs 不同: 不要求 URL 带 jobRunId — 无 jobRunId 的
+    URL (BoostKit/MindSpore/kunpengcompute 的 boostkit-ci-bot /
+    MindSpore-Bot / kunpeng-ci-bot 风格) 也能通过 openlibing 网关展开 jobs。
+    """
+    seen: set[tuple[str, str, str]] = set()
+    refs: list[dict] = []
+    for c in comments:
+        if not comment_is_from_bot(c):
+            continue
+        body = c.get("body") or ""
+        for m in OPENLIBING_RE.finditer(body):
+            url = m.group(0).rstrip(".,);'\"")
+            try:
+                params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            except ValueError:
+                continue
+            project_id = (params.get("projectId") or [""])[0]
+            pipeline_id = (params.get("pipelineId") or [""])[0]
+            run_id = (params.get("pipelineRunId") or [""])[0]
+            if not (project_id and pipeline_id and run_id):
+                continue
+            key = (project_id, pipeline_id, run_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append({
+                "project_id": project_id,
+                "pipeline_id": pipeline_id,
+                "pipeline_run_id": run_id,
+                "source_url": url,
+                "comment_id": c.get("id"),
+                "comment_user": (c.get("user") or {}).get("login"),
+            })
+    return refs
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -661,6 +792,39 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
     # 路径 A: 评论里贴 jobRunId (Ascend/cann 风格)
     jobs = extract_pipeline_jobs(comments)
 
+    # 路径 D: openlibing 网关 (MindSpore/kunpengcompute/BoostKit 的 bot 风格)
+    # 评论 URL 常不带 jobRunId,gitcode web-api 拒收 PAT → 直接走 openlibing
+    # 自家网关 (匿名) 展开 run 的全部 job/step 再拉日志。
+    # 与路径 A/B 互补: A 需要 web token,D 完全免 token,先跑 D 成功率高。
+    olb_refs = extract_olb_pipeline_refs(comments)
+    olb_jobs: list[dict] = []
+    for ref in olb_refs:
+        detail = fetch_olb_run_detail(ref["project_id"], ref["pipeline_id"],
+                                      ref["pipeline_run_id"])
+        if not detail:
+            continue
+        for stage in (detail.get("stages") or []):
+            for j in (stage.get("jobs") or []):
+                jrid = j.get("id")
+                if not jrid or j.get("status") == "IGNORED":
+                    continue
+                for st in (j.get("steps") or []):
+                    sid = st.get("id")
+                    if not sid:
+                        continue
+                    olb_jobs.append({
+                        "project_id": ref["project_id"],
+                        "pipeline_id": ref["pipeline_id"],
+                        "pipeline_run_id": ref["pipeline_run_id"],
+                        "job_run_id": jrid,
+                        "step_run_id": sid,
+                        "name": j.get("name"),
+                        "stage": stage.get("name", ""),
+                        "status": j.get("status"),
+                        "step_name": st.get("name"),
+                        "source": "openlibing-gateway",
+                    })
+
     # 路径 C: 评论里贴 gitcode Actions run URL (openubmc-ci-bot / cann-robot 风格)
     # 一个 run 含几十个 job、每个 job 又分多个 step,日志按 step 粒度拉取
     action_runs = extract_action_runs(comments)
@@ -736,6 +900,26 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
                                 job_run_id=job["job_run_id"],
                                 pipeline_detail=detail,
                                 pr_number=num)
+        except GitcodeError:
+            log = None
+        if log:
+            dest.write_text(log, encoding="utf-8")
+            return {"file": fname, "size": len(log), **job}
+        return {"file": None, "error": "no_log", **job}
+
+    def _one_olb_job(i_job: tuple[int, dict]) -> dict:
+        i, job = i_job
+        short = job["job_run_id"][:8]
+        fname = f"o{i:03d}_{short}.log"
+        dest = pr_dir / fname
+        if dest.exists() and dest.stat().st_size > 0:
+            return {"file": fname, "cached": True, **job}
+        try:
+            log = fetch_olb_job_log(job["project_id"],
+                                    pipeline_id=job["pipeline_id"],
+                                    run_id=job["pipeline_run_id"],
+                                    job_run_id=job["job_run_id"],
+                                    step_run_id=job["step_run_id"])
         except GitcodeError:
             log = None
         if log:
@@ -829,6 +1013,23 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
                 if sleep:
                     time.sleep(sleep)
     downloaded.extend(a for a in action_downloaded if a is not None)
+
+    # 路径 D 日志并发拉取,结果并入 downloaded
+    olb_downloaded: list[dict] = [None] * len(olb_jobs)  # type: ignore
+    if olb_jobs:
+        with ThreadPoolExecutor(max_workers=max(1, job_concurrency)) as jex:
+            futures = {jex.submit(_one_olb_job, (i, j)): i for i, j in enumerate(olb_jobs)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    olb_downloaded[idx] = fut.result()
+                    if olb_downloaded[idx].get("file"):
+                        log_count += 1
+                except Exception as e:
+                    olb_downloaded[idx] = {"file": None, "error": str(e), **olb_jobs[idx]}
+                if sleep:
+                    time.sleep(sleep)
+    downloaded.extend(o for o in olb_downloaded if o is not None)
 
     (pr_dir / "_meta.json").write_text(json.dumps({
         "number": num, "title": title, "state": pr.get("state"),

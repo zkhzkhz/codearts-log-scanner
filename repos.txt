@@ -18,7 +18,6 @@
 @Ascend
 @CANN
 @kunpengcompute
-@openEuler
-@src-openeuler
-@opengauss
-@mindspore
+# openEuler/src-openeuler/opengauss 全 Jenkins,按约定跳过
+# mindspore 仅 mindformers 走 CodeArts (projectId 300030),其余 12 仓全 Jenkins
+mindspore/mindformers
