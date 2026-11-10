@@ -18,3 +18,7 @@
 @Ascend
 @CANN
 @kunpengcompute
+@openEuler
+@src-openeuler
+@opengauss
+@mindspore

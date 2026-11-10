@@ -160,7 +160,7 @@ def list_org_repos(org: str, v5_token: str = "") -> list[str]:
         if len(data) < 100:
             break
         page += 1
-        if page > 50:
+        if page > 150:
             print("! org repos pagination safety limit", file=sys.stderr)
             break
     return repos
@@ -192,6 +192,7 @@ def list_pr_comments(owner: str, repo: str, pr_number: int, v5_token: str = "") 
 BOT_LOGIN_HINTS = (
     "ascend-robot", "ascend-ds-bot", "kunpeng-bot", "codearts",
     "ci-bot", "huawei-ci", "ascend-ci", "openubmc-ci-bot", "cann-robot",
+    "mindspore-bot", "openlibing",
 )
 
 OPENLIBING_RE = re.compile(
@@ -412,29 +413,36 @@ def fetch_job_log(owner: str, repo: str, web_token: str, *,
     return result
 
 # ---------------------------------------------------------------------------
-# web-api — gitcode Actions (openubmc-ci-bot / cann-robot 风格)
+# gitcode Actions (openubmc-ci-bot / cann-robot 风格) — AtomGit OpenAPI v8
 # ---------------------------------------------------------------------------
 
-def _actions_headers(web_token: str, owner: str, repo: str) -> dict:
-    # CloudWAF 要求带 gitcode.com 的 Referer,否则 418 拦截页
-    return {
-        "Authorization": f"Bearer {web_token}",
-        "Origin": "https://gitcode.com",
-        "Referer": f"https://gitcode.com/{owner}/{repo}",
-        "X-App-Channel": "gitcode-fe",
-        "X-App-Version": "0",
-        "X-Platform": "web",
-    }
+V8_BASE = "https://api.gitcode.com/api/v8"
+
+def _is_web_jwt(token: str) -> bool:
+    """web 会话 token 是三段式 JWT; AtomGit PAT 是不透明短串。"""
+    return token.count(".") == 2 and len(token) > 100
+
+def _actions_auth(token: str) -> tuple[str, str]:
+    """返回 (auth_header_name, auth_header_value)。
+
+    PAT → PRIVATE-TOKEN;web JWT → Bearer。空 token 返回空串(匿名,元数据仍可读)。
+    """
+    if not token:
+        return "", ""
+    if _is_web_jwt(token):
+        return "Authorization", f"Bearer {token}"
+    return "PRIVATE-TOKEN", token
 
 def fetch_action_run_detail(owner: str, repo: str, run_id: str,
-                            web_token: str) -> dict | None:
+                            token: str = "") -> dict | None:
     """取一个 Actions run 的完整结构 (stages→jobs→steps)。
 
-    该端点公开可达(无有效 token 也能 200,但必须有 Referer 过 CloudWAF)。
+    v8 run/jobs 元数据官方允许匿名访问,token 缺失/过期不影响结构解析。
     """
-    encoded = urllib.parse.quote(f"{owner}/{repo}", safe="")
-    url = f"{WEB_BASE}/projects/{encoded}/actions/workflow-runs/{run_id}"
-    status, body = _request(url, headers=_actions_headers(web_token, owner, repo))
+    url = f"{V8_BASE}/repos/{owner}/{repo}/actions/runs/{run_id}"
+    name, value = _actions_auth(token)
+    headers = {name: value} if name else {}
+    status, body = _request(url, headers=headers)
     if status != 200 or not body:
         return None
     try:
@@ -442,27 +450,36 @@ def fetch_action_run_detail(owner: str, repo: str, run_id: str,
     except json.JSONDecodeError:
         return None
 
-def fetch_action_job_log(owner: str, repo: str, web_token: str, *,
+def fetch_action_job_log(owner: str, repo: str, token: str, *,
                          run_id: str, job_id: str, step_run_id: str,
-                         page_limit: int = 200) -> str | None:
-    """分页拉一个 Actions step 的日志,直到无更多(offset 递增)。
+                         page_limit: int = 500) -> str | None:
+    """分页拉一个 Actions step 的日志 (v8 端点,需 AtomGit PAT)。
 
-    端点: POST /api/v2/projects/{enc}/actions/workflow-runs/{run}/jobs/{job}/logs?step_run_id={step}
-    body: {"offset": N, "limit": 100}
-    需要有效 web token(过期返回 420)。
+    端点: POST /api/v8/repos/{owner}/{repo}/actions/runs/{run}/jobs/{job}/logs
+    body: {"step_id": ..., "offset": N, "limit": 100, "sort": "asc"}
+    响应: {"has_more": bool, "start_offset": N, "end_offset": N, "log": "..."}
+    官方文档: 不允许匿名访问,仅认 AtomGit 用户访问令牌(PAT)。
     """
-    encoded = urllib.parse.quote(f"{owner}/{repo}", safe="")
-    url = (f"{WEB_BASE}/projects/{encoded}/actions/workflow-runs/{run_id}"
-           f"/jobs/{job_id}/logs?step_run_id={step_run_id}")
-    headers = _actions_headers(web_token, owner, repo)
+    url = f"{V8_BASE}/repos/{owner}/{repo}/actions/runs/{run_id}/jobs/{job_id}/logs"
+    name, value = _actions_auth(token)
+    headers = {name: value} if name else {}
+
+    if not token or _is_web_jwt(token):
+        raise GitcodeError(
+            "Actions 日志仅支持 AtomGit PAT (atomgit.com 个人访问令牌);"
+            "web JWT/匿名均 401 — 请在 .env 配置 ATOMGIT_TOKEN")
 
     chunks: list[str] = []
     offset = 0
     for _ in range(page_limit):
-        status, body = _request(url, method="POST", data={"offset": offset, "limit": 100},
+        status, body = _request(url, method="POST",
+                                data={"step_id": step_run_id, "offset": offset,
+                                      "limit": 100, "sort": "asc"},
                                 headers=headers, timeout=60)
-        if status == 401 or status == 420:
-            raise GitcodeError(f"Actions 日志需要有效 web token (HTTP {status}, error_code 420=未认证或已过期)")
+        if status == 401:
+            raise GitcodeError("Actions 日志鉴权失败 (HTTP 401) — AtomGit PAT 无效或权限不足")
+        if status == 403:
+            raise GitcodeError("Actions 日志无权限 (HTTP 403) — PAT 权限范围不足或非该仓库可见日志")
         if status != 200 or not body:
             break
         try:
@@ -470,27 +487,26 @@ def fetch_action_job_log(owner: str, repo: str, web_token: str, *,
         except json.JSONDecodeError:
             break
 
-        # 响应可能是 {"log": "..."} / {"logs": [...]} / {"content": ...}
-        part = d.get("log") if isinstance(d, dict) else None
-        if part is None and isinstance(d, dict):
-            part = d.get("logs") or d.get("content") or ""
+        part = d.get("log") if isinstance(d, dict) else ""
         if isinstance(part, list):
             part = "\n".join(str(x) for x in part)
         if not part:
             break
         chunks.append(str(part))
 
-        # 分页推进: 优先用 end_offset/has_more,否则按返回行数推进
-        new_offset = d.get("end_offset")
         try:
-            new_offset = int(new_offset)
+            new_offset = int(d.get("end_offset", 0))
         except (TypeError, ValueError):
-            new_offset = offset + len(str(part).splitlines())
-        if new_offset <= offset:
+            break
+        has_more = bool(d.get("has_more", False))
+        if not has_more or new_offset <= offset:
             break
         offset = new_offset
         time.sleep(0.1)
-    return "".join(chunks) if chunks else None
+    result = "".join(chunks) if chunks else None
+    if result and result.strip() == "has no log yet":
+        return None
+    return result
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -611,7 +627,7 @@ def expand_repo_entries(entries: list[tuple[str, str]], *, refresh: bool = False
 
 def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
                     repo_dir: Path, sleep: float, job_concurrency: int = 4,
-                    incremental: bool = False) -> dict:
+                    incremental: bool = False, action_token: str = "") -> dict:
     """处理单个 PR:取评论、解析 jobs、并发拉日志。线程安全(只写自己的子目录)。
 
     incremental=True 时: 若 _meta.json 已存在且含日志,跳过拉取。
@@ -734,10 +750,11 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
         dest = pr_dir / fname
         if dest.exists() and dest.stat().st_size > 0:
             return {"file": fname, "cached": True, **job}
-        if not token:
+        atok = action_token or token
+        if not atok:
             return {"file": None, "skipped": "no token", **job}
         try:
-            log = fetch_action_job_log(owner, repo, token,
+            log = fetch_action_job_log(owner, repo, atok,
                                        run_id=job["run_id"],
                                        job_id=job["job_id"],
                                        step_run_id=job["step_run_id"])
@@ -749,11 +766,12 @@ def _process_one_pr(owner: str, repo: str, pr: dict, *, token: str,
         return {"file": None, "error": "no_log", **job}
 
     # 路径 C 展开: 每个 run → 每个(有日志可拉且非 IGNORED 的)job → 每个 step
+    # run 详情匿名可读,无需 token;日志本体在 _one_action_job 里要求 PAT
     action_jobs: list[dict] = []
     action_detail: dict | None = None
     for ar in action_runs:
         try:
-            action_detail = fetch_action_run_detail(owner, repo, ar["run_id"], token or "")
+            action_detail = fetch_action_run_detail(owner, repo, ar["run_id"])
         except GitcodeError:
             action_detail = None
         if not action_detail:
@@ -862,9 +880,11 @@ def get_scanned_pr_numbers(repo_dir: Path) -> set[int]:
 def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
                    out_root: Path, limit: int = 0, sleep: float = 0.0,
                    concurrency: int = 8, job_concurrency: int = 4,
-                   incremental: bool = False) -> tuple[int, int]:
+                   incremental: bool = False,
+                   action_token: str = "") -> tuple[int, int]:
     """拉取单个仓库的日志。PR 之间用线程池并发,PR 内部 jobs 也并发。
 
+    action_token: AtomGit PAT,Actions 路径 (路径 C) 日志专用;空则用 token 回退逻辑。
     incremental=True 时:
       - 若已有 _index.json,只拉 updated_at > 最新已扫描 PR 的更新时间的 PR
       - 同时跳过已有日志的 PR (通过 _meta.json 判断)
@@ -901,7 +921,8 @@ def fetch_one_repo(owner: str, repo: str, *, token: str, since: datetime,
         futures = {ex.submit(_process_one_pr, owner, repo, pr,
                              token=token, repo_dir=repo_dir, sleep=sleep,
                              job_concurrency=job_concurrency,
-                             incremental=incremental): pr
+                             incremental=incremental,
+                             action_token=action_token): pr
                    for pr in pulls}
         for fut in as_completed(futures):
             try:
@@ -977,6 +998,8 @@ Token 获取:
     ap.add_argument("--days", type=int, default=int(os.environ.get("DAYS", "30")))
     ap.add_argument("--token", default=os.environ.get("GITCODE_TOKEN", ""),
                     help="gitcode web token (从 cookie GITCODE_ACCESS_TOKEN)")
+    ap.add_argument("--atomgit-token", default=os.environ.get("ATOMGIT_TOKEN", ""),
+                    help="AtomGit PAT (Actions 日志用;未配置时回退 --token,须为 PAT 格式)")
     ap.add_argument("--out", default="logs")
     ap.add_argument("--limit", type=int, default=0, help="每仓库最多处理 N 个 PR")
     ap.add_argument("--sleep", type=float, default=0.05,
@@ -1031,6 +1054,14 @@ Token 获取:
     if not args.token:
         print("WARN: 未配置 GITCODE_TOKEN,只会列出 URL,不下载日志", file=sys.stderr)
 
+    # Actions 日志 token: 优先 ATOMGIT_TOKEN (PAT);fallback 到 --token,但仅当它是 PAT 格式
+    action_token = args.atomgit_token
+    if not action_token and args.token and not _is_web_jwt(args.token):
+        action_token = args.token
+        print("INFO: 未配置 ATOMGIT_TOKEN,GITCODE_TOKEN 是 PAT 格式,Actions 日志复用它", file=sys.stderr)
+    if args.atomgit_token:
+        print("INFO: AtomGit PAT 已配置 (Actions 日志)", file=sys.stderr)
+
     since = datetime.now(timezone.utc) - timedelta(days=args.days)
     out_root = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -1047,7 +1078,8 @@ Token 获取:
                                          out_root=out_root, limit=args.limit,
                                          sleep=args.sleep, concurrency=args.concurrency,
                                          job_concurrency=args.job_concurrency,
-                                         incremental=args.incremental)
+                                         incremental=args.incremental,
+                                         action_token=action_token)
             grand_pr += n_pr
             grand_log += n_log
         except GitcodeError as e:
